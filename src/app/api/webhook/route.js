@@ -3,186 +3,55 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 /**
- * Advanced Demo WhatsApp Bot (Next.js Route) - JavaScript Version
- * ---------------------------------------------------------------
- * Features (Demo):
- * - Multi-tenant (عدة عملاء/غرف)
- * - Language selection (AR/EN) + language switch
- * - Main menu + services menu
- * - Meeting booking flow
- * - Lead qualification flow (service + budget + timeline + notes)
- * - Human handover (demo ticket logging)
- * - Working hours / after-hours response
- * - In-memory sessions (NO DB)
+ * Demo WhatsApp Bot (Next.js Route) - JavaScript Version
+ * FIXED:
+ * - Explicit language selection first (AR / EN)
+ * - Do not resend menu on every text message
+ * - Handle interactive vs text properly
+ * - Better state updates and flow control
  *
- * NOTE:
- * - This is DEMO ONLY (in-memory state).
- * - Production should use DB + Redis + Queue + Logs + Admin Dashboard.
+ * NOTE: In-memory only for demo.
+ * Production should use DB + Redis.
  */
 
 // ===============================
 // In-memory state (DEMO ONLY)
 // ===============================
 const userSessions = new Map();
-const handoverTickets = []; // demo only
-const leadSubmissions = []; // demo only
-const meetingRequests = []; // demo only
+
+// States:
+// - CHOOSE_LANGUAGE
+// - MAIN_MENU
+// - SERVICES_MENU
+// - BOOK_MEETING_NAME
+// - BOOK_MEETING_EMAIL
+// - BOOK_MEETING_TOPIC
 
 // ===============================
-// Multi-tenant config (غرف العملاء)
+// Multi-tenant demo config (غرف العملاء)
 // ===============================
 const tenants = {
   default: {
     id: "default",
     nameAr: "الشركة الرئيسية",
     nameEn: "Main Company",
-
-    supportPhone: "+201000000000",
-
-    workingHours: {
-      timezoneOffsetMinutes: 120, // Egypt UTC+2 (demo)
-      days: [0, 1, 2, 3, 4], // Sun-Thu
-      startHour: 9,
-      endHour: 17, // exclusive
-    },
-
     meetingLabelAr: "حجز اجتماع",
     meetingLabelEn: "Book Meeting",
-
-    handoverLabelAr: "التحدث مع موظف",
-    handoverLabelEn: "Talk to Agent",
-
-    introAr:
-      "بوت تجريبي للشركة الرئيسية )ديمو(. يمكنه الرد الآلي، جمع بيانات العملاء، وتحويلهم للدعم.",
-    introEn:
-      "Demo bot for Main Company. It can auto-reply, collect lead info, and hand over to support.",
-
-    services: [
-      {
-        id: "srv_whatsapp_bot",
-        titleAr: "بوت واتساب",
-        titleEn: "WhatsApp Bot",
-        descAr:
-          "بوت واتساب ذكي للرد الآلي + توجيه العملاء + ربط مع لوحة تحكم + قابل للتوسع.",
-        descEn:
-          "Smart WhatsApp bot for auto-reply + customer routing + dashboard integration + scalability.",
-      },
-      {
-        id: "srv_dashboard",
-        titleAr: "لوحة تحكم",
-        titleEn: "Dashboard",
-        descAr:
-          "لوحة تحكم لإدارة المحادثات والاشتراكات والمستخدمين والتقارير بشكل مركزي.",
-        descEn:
-          "Dashboard to manage chats, subscriptions, users, and reports centrally.",
-      },
-    ],
-
-    faq: [
-      {
-        keywordsAr: ["سعر", "تكلفة", "الاسعار", "السعر"],
-        keywordsEn: ["price", "pricing", "cost"],
-        answerAr:
-          "💰 السعر يعتمد على المتطلبات )عدد المستخدمين / عدد العملاء / نوع التكاملات(. يمكنني جمع احتياجك أولًا ثم إرسال عرض مناسب.",
-        answerEn:
-          "💰 Pricing depends on requirements )number of users / tenants / integrations(. I can collect your needs first, then provide a suitable quote.",
-      },
-      {
-        keywordsAr: ["مدة", "وقت", "تسليم"],
-        keywordsEn: ["time", "timeline", "delivery"],
-        answerAr:
-          "⏱️ مدة التنفيذ تعتمد على التفاصيل. نسخة MVP عادة أسرع، ثم نضيف التطويرات تدريجيًا.",
-        answerEn:
-          "⏱️ Delivery time depends on details. An MVP version is usually faster, then advanced features can be added incrementally.",
-      },
-      {
-        keywordsAr: ["دعم", "صيانة"],
-        keywordsEn: ["support", "maintenance"],
-        answerAr:
-          "🛠️ يتوفر دعم وصيانة حسب الاتفاق، ويمكن إضافة باقات شهرية للدعم والمتابعة.",
-        answerEn:
-          "🛠️ Support and maintenance are available based on the agreement, with optional monthly support plans.",
-      },
-    ],
+    supportPhone: "+201000000000",
   },
-
   premium: {
     id: "premium",
     nameAr: "عميل مميز",
     nameEn: "Premium Client",
-
-    supportPhone: "+201111111111",
-
-    workingHours: {
-      timezoneOffsetMinutes: 120, // Egypt UTC+2 (demo)
-      days: [0, 1, 2, 3, 4, 6], // Sun-Thu + Sat (example)
-      startHour: 10,
-      endHour: 20,
-    },
-
     meetingLabelAr: "جدولة مكالمة",
     meetingLabelEn: "Schedule Call",
-
-    handoverLabelAr: "محادثة مع مختص",
-    handoverLabelEn: "Talk to Specialist",
-
-    introAr:
-      "بوت تجريبي لعميل مميز )ديمو(. يوضح دعم التعددية )عدة شركات( داخل نفس النظام.",
-    introEn:
-      "Demo bot for a Premium Client. It demonstrates multi-tenant support )multiple companies( in the same system.",
-
-    services: [
-      {
-        id: "srv_whatsapp_bot",
-        titleAr: "حلول واتساب للأعمال",
-        titleEn: "WhatsApp Business Solutions",
-        descAr:
-          "حلول محادثات واتساب متعددة العملاء )Multi-tenant( مع توجيه ورسائل تلقائية.",
-        descEn:
-          "Multi-tenant WhatsApp chat solutions with routing and automated messaging.",
-      },
-      {
-        id: "srv_dashboard",
-        titleAr: "لوحة إدارة الاشتراكات",
-        titleEn: "Subscriptions Dashboard",
-        descAr: "إدارة الاشتراكات والخطط والعملاء والمشرفين مع تقارير أداء.",
-        descEn:
-          "Manage subscriptions, plans, clients, admins, and performance analytics.",
-      },
-    ],
-
-    faq: [
-      {
-        keywordsAr: ["تجربة", "ديمو", "عرض"],
-        keywordsEn: ["demo", "trial", "preview"],
-        answerAr:
-          "🎯 يمكن تجهيز نسخة ديمو سريعة توضح الفكرة الأساسية قبل التنفيذ الكامل.",
-        answerEn:
-          "🎯 A quick demo version can be prepared to demonstrate the core concept before full implementation.",
-      },
-      {
-        keywordsAr: ["تكامل", "ربط", "api"],
-        keywordsEn: ["integration", "api", "connect"],
-        answerAr:
-          "🔗 يمكن ربط البوت مع APIs ولوحات تحكم وأنظمة خارجية حسب المتطلبات.",
-        answerEn:
-          "🔗 The bot can be integrated with APIs, dashboards, and external systems based on requirements.",
-      },
-    ],
+    supportPhone: "+201111111111",
   },
 };
 
-// Demo: تحديد الغرفة/العميل بناءً على رقم الواتساب )آخر رقم(
 function resolveTenantId(from) {
-  const lastChar = String(from || "").slice(-1);
-  const lastDigit = Number(lastChar || 0);
-
-  // even => premium / odd => default
-  return Number.isNaN(lastDigit)
-    ? "default"
-    : lastDigit % 2 === 0
-      ? "premium"
-      : "default";
+  const lastDigit = Number(from?.[from.length - 1] || 0);
+  return lastDigit % 2 === 0 ? "premium" : "default";
 }
 
 // ===============================
@@ -193,7 +62,6 @@ function containsArabic(text) {
 }
 
 function detectLanguage(text) {
-  if (!text) return "ar";
   return containsArabic(text) ? "ar" : "en";
 }
 
@@ -206,102 +74,67 @@ function t(lang, ar, en) {
 }
 
 function normalizeText(text) {
-  return String(text || "").trim();
+  return (text || "").trim();
 }
 
-function lower(text) {
+function normalizeLower(text) {
   return normalizeText(text).toLowerCase();
 }
 
-function getTenant(tenantId) {
-  return tenants[tenantId] || tenants.default;
+function isMenuCommand(text) {
+  const v = normalizeLower(text);
+  return [
+    "menu",
+    "start",
+    "main menu",
+    "back",
+    "القائمة",
+    "ابدأ",
+    "ابدء",
+    "رجوع",
+    "منيو",
+  ].includes(v);
 }
 
-function nowInTenantTime(tenant) {
-  const offset = tenant?.workingHours?.timezoneOffsetMinutes ?? 0;
-  const nowUtc = new Date();
-  const utcMs = nowUtc.getTime() + nowUtc.getTimezoneOffset() * 60 * 1000;
-  return new Date(utcMs + offset * 60 * 1000);
-}
-
-function isWithinWorkingHours(tenant) {
-  const nowLocal = nowInTenantTime(tenant);
-  const day = nowLocal.getDay();
-  const hour = nowLocal.getHours();
-
-  const wh = tenant.workingHours;
-  if (!wh) return true;
-
-  const dayAllowed = wh.days.includes(day);
-  const timeAllowed = hour >= wh.startHour && hour < wh.endHour;
-
-  return dayAllowed && timeAllowed;
+function isGreeting(text) {
+  const v = normalizeLower(text);
+  return [
+    "hi",
+    "hello",
+    "hey",
+    "مرحبا",
+    "السلام عليكم",
+    "اهلا",
+    "أهلا",
+  ].includes(v);
 }
 
 function getSession(from) {
-  const existing = userSessions.get(from);
-  if (existing) return existing;
+  let session = userSessions.get(from);
 
-  const tenantId = resolveTenantId(from);
+  if (!session) {
+    session = {
+      state: "CHOOSE_LANGUAGE",
+      lang: null, // "ar" | "en"
+      tenantId: resolveTenantId(from),
+      data: {
+        name: "",
+        email: "",
+        topic: "",
+      },
+    };
+    userSessions.set(from, session);
+  }
 
-  const session = {
-    state: "LANG_SELECT", // first step
-    lang: null, // selected explicitly by user
-    tenantId,
-    meta: {
-      createdAt: new Date().toISOString(),
-      lastActiveAt: new Date().toISOString(),
-    },
-    data: {
-      // meeting flow
-      name: "",
-      email: "",
-      topic: "",
-
-      // lead qualification
-      leadService: "",
-      budget: "",
-      timeline: "",
-      notes: "",
-
-      // handover
-      handoverReason: "",
-    },
-  };
-
-  userSessions.set(from, session);
   return session;
 }
 
 function setSession(from, patch) {
-  const current = userSessions.get(from) || {
-    state: "LANG_SELECT",
-    lang: null,
-    tenantId: "default",
-    meta: {
-      createdAt: new Date().toISOString(),
-      lastActiveAt: new Date().toISOString(),
-    },
-    data: {
-      name: "",
-      email: "",
-      topic: "",
-      leadService: "",
-      budget: "",
-      timeline: "",
-      notes: "",
-      handoverReason: "",
-    },
-  };
+  const current = getSession(from);
 
   const next = {
     ...current,
     ...patch,
-    meta: {
-      ...current.meta,
-      ...(patch.meta || {}),
-      lastActiveAt: new Date().toISOString(),
-    },
     data: {
       ...current.data,
       ...(patch.data || {}),
@@ -312,76 +145,21 @@ function setSession(from, patch) {
   return next;
 }
 
-function resetToMainMenu(from) {
-  const current = userSessions.get(from);
-  if (!current) return;
-
+function resetCollectedData(from) {
+  const current = getSession(from);
   userSessions.set(from, {
     ...current,
-    state: "MAIN_MENU",
-    meta: {
-      ...current.meta,
-      lastActiveAt: new Date().toISOString(),
-    },
-    data: {
-      name: "",
-      email: "",
-      topic: "",
-      leadService: "",
-      budget: "",
-      timeline: "",
-      notes: "",
-      handoverReason: "",
-    },
+    data: { name: "", email: "", topic: "" },
   });
 }
 
-function clearSession(from) {
-  userSessions.delete(from);
-}
-
-function classifyLead(data) {
-  const budget = (data.budget || "").toLowerCase();
-  const timeline = (data.timeline || "").toLowerCase();
-
-  const highBudget = [
-    "high",
-    "enterprise",
-    "large",
-    "مرتفعة",
-    "عالية",
-    "كبير",
-  ].some((k) => budget.includes(k));
-
-  const urgent = [
-    "urgent",
-    "asap",
-    "this week",
-    "فوري",
-    "عاجل",
-    "هذا الاسبوع",
-  ].some((k) => timeline.includes(k));
-
-  if (highBudget && urgent) return "HOT";
-  if (highBudget || urgent) return "WARM";
-  return "COLD";
-}
-
-function matchesKeyword(text, keywords = []) {
-  const l = lower(text);
-  return keywords.some((k) => l.includes(lower(k)));
-}
-
-function findFaqAnswer(tenant, lang, text) {
-  for (const item of tenant.faq || []) {
-    const hit =
-      lang === "ar"
-        ? matchesKeyword(text, item.keywordsAr || [])
-        : matchesKeyword(text, item.keywordsEn || []);
-
-    if (hit) return lang === "ar" ? item.answerAr : item.answerEn;
-  }
-  return null;
+function resetToMain(from) {
+  const current = getSession(from);
+  userSessions.set(from, {
+    ...current,
+    state: "MAIN_MENU",
+    data: { name: "", email: "", topic: "" },
+  });
 }
 
 // ===============================
@@ -436,7 +214,7 @@ async function sendButtons(to, bodyText, buttons) {
       type: "button",
       body: { text: bodyText },
       action: {
-        buttons: buttons.slice(0, 3).map((btn) => ({
+        buttons: buttons.map((btn) => ({
           type: "reply",
           reply: {
             id: btn.id,
@@ -449,12 +227,12 @@ async function sendButtons(to, bodyText, buttons) {
 }
 
 // ===============================
-// UI Senders
+// Menus / Screens
 // ===============================
 async function sendLanguageMenu(to) {
   return sendButtons(
     to,
-    "👋 Welcome / أهلاً بك\nPlease choose your language / من فضلك اختر اللغة",
+    "👋 Welcome / أهلاً\nPlease choose your language / من فضلك اختر اللغة",
     [
       { id: "lang_ar", title: "العربية" },
       { id: "lang_en", title: "English" },
@@ -463,258 +241,118 @@ async function sendLanguageMenu(to) {
 }
 
 async function sendMainMenu(to, session) {
-  const tenant = getTenant(session.tenantId);
+  const tenant = tenants[session.tenantId] || tenants.default;
   const lang = session.lang || "ar";
 
-  const body = t(
+  const title = t(
     lang,
-    `أهلاً 👋\nمرحبًا بك في ${tenant.nameAr}\n\n${tenant.introAr}\n\nاختر من القائمة:`,
-    `Hello 👋\nWelcome to ${tenant.nameEn}\n\n${tenant.introEn}\n\nChoose an option:`,
+    `أهلاً 👋\nمرحبًا بك في ${tenant.nameAr}\nاختر من القائمة:`,
+    `Hello 👋\nWelcome to ${tenant.nameEn}\nChoose an option:`,
   );
 
   const meetingLabel = t(lang, tenant.meetingLabelAr, tenant.meetingLabelEn);
 
-  return sendButtons(to, body, [
+  return sendButtons(to, title, [
     { id: "services", title: t(lang, "الخدمات", "Services") },
     { id: "book_meeting", title: meetingLabel },
-    { id: "lead_start", title: t(lang, "طلب عرض", "Get Quote") },
+    { id: "support", title: t(lang, "الدعم", "Support") },
   ]);
 }
 
-async function sendMoreMenu(to, session) {
-  const tenant = getTenant(session.tenantId);
+async function sendServicesMenu(to, session) {
   const lang = session.lang || "ar";
 
   return sendButtons(
     to,
     t(
       lang,
-      `خيارات إضافية في ${tenant.nameAr}:`,
-      `More options in ${tenant.nameEn}:`,
+      "📦 خدماتنا التجريبية\nاختر الخدمة التي تريد معرفة تفاصيلها:",
+      "📦 Demo Services\nChoose a service to learn more:",
     ),
     [
-      { id: "support", title: t(lang, "الدعم", "Support") },
-      {
-        id: "talk_agent",
-        title: t(lang, tenant.handoverLabelAr, tenant.handoverLabelEn),
-      },
+      { id: "srv_whatsapp_bot", title: t(lang, "بوت واتساب", "WhatsApp Bot") },
+      { id: "srv_dashboard", title: t(lang, "لوحة تحكم", "Dashboard") },
       { id: "back_main", title: t(lang, "رجوع", "Back") },
     ],
   );
 }
 
-async function sendServicesMenu(to, session) {
-  const tenant = getTenant(session.tenantId);
-  const lang = session.lang || "ar";
+// ===============================
+// GET: Meta webhook verification
+// ===============================
+export async function GET(req) {
+  const searchParams = req.nextUrl.searchParams;
 
-  const services = tenant.services || [];
-  const s1 = services[0];
-  const s2 = services[1];
+  const mode = searchParams.get("hub.mode");
+  const token = searchParams.get("hub.verify_token");
+  const challenge = searchParams.get("hub.challenge");
 
-  return sendButtons(
-    to,
-    t(
-      lang,
-      "📦 خدماتنا التجريبية\nاختر خدمة لمعرفة تفاصيلها:",
-      "📦 Demo Services\nChoose a service to learn more:",
-    ),
-    [
-      {
-        id: s1?.id || "srv_whatsapp_bot",
-        title: s1
-          ? lang === "ar"
-            ? s1.titleAr
-            : s1.titleEn
-          : t(lang, "بوت واتساب", "WhatsApp Bot"),
-      },
-      {
-        id: s2?.id || "srv_dashboard",
-        title: s2
-          ? lang === "ar"
-            ? s2.titleAr
-            : s2.titleEn
-          : t(lang, "لوحة تحكم", "Dashboard"),
-      },
-      { id: "more_menu", title: t(lang, "المزيد", "More") },
-    ],
-  );
-}
+  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
 
-async function sendLeadServiceButtons(to, session) {
-  const lang = session.lang || "ar";
-  return sendButtons(
-    to,
-    t(
-      lang,
-      "🎯 طلب عرض سعر\nاختر نوع الخدمة المطلوبة:",
-      "🎯 Get a Quote\nChoose the required service type:",
-    ),
-    [
-      { id: "lead_srv_whatsapp", title: t(lang, "بوت واتساب", "WhatsApp Bot") },
-      { id: "lead_srv_dashboard", title: t(lang, "لوحة تحكم", "Dashboard") },
-      { id: "lead_srv_other", title: t(lang, "خدمة أخرى", "Other") },
-    ],
-  );
-}
+  if (mode === "subscribe" && token && token === verifyToken) {
+    return new NextResponse(challenge ?? "", {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
 
-async function sendLeadBudgetButtons(to, session) {
-  const lang = session.lang || "ar";
-  return sendButtons(
-    to,
-    t(lang, "💰 اختر الميزانية التقريبية:", "💰 Choose an approximate budget:"),
-    [
-      { id: "budget_low", title: t(lang, "منخفضة", "Low") },
-      { id: "budget_mid", title: t(lang, "متوسطة", "Medium") },
-      { id: "budget_high", title: t(lang, "مرتفعة", "High") },
-    ],
-  );
-}
-
-async function sendLeadTimelineButtons(to, session) {
-  const lang = session.lang || "ar";
-  return sendButtons(
-    to,
-    t(lang, "⏱️ متى تريد البدء؟", "⏱️ When do you want to start?"),
-    [
-      { id: "timeline_urgent", title: t(lang, "فوري", "Urgent") },
-      { id: "timeline_soon", title: t(lang, "خلال شهر", "Within 1 month") },
-      { id: "timeline_later", title: t(lang, "لاحقًا", "Later") },
-    ],
-  );
-}
-
-async function sendAfterHoursNotice(to, session) {
-  const tenant = getTenant(session.tenantId);
-  const lang = session.lang || "ar";
-  const wh = tenant.workingHours;
-
-  await sendText(
-    to,
-    t(
-      lang,
-      `⏰ خارج أوقات العمل حاليًا\nساعات العمل: من ${wh.startHour}:00 إلى ${wh.endHour}:00\nيمكنك ترك بياناتك الآن وسنتواصل معك في وقت العمل.`,
-      `⏰ We are currently outside working hours.\nWorking hours: ${wh.startHour}:00 - ${wh.endHour}:00\nYou can leave your details now and we will contact you during business hours.`,
-    ),
-  );
+  return NextResponse.json({ error: "Verification failed" }, { status: 403 });
 }
 
 // ===============================
-// Message Handlers
+// Handlers
 // ===============================
-async function handleGlobalTextCommands(from, session, textBody) {
-  const cmd = lower(textBody);
+async function handleTextMessage(from, textBody) {
+  const session = getSession(from);
+  const text = normalizeText(textBody);
 
-  // commands available in any state
-  const menuCommands = [
-    "menu",
-    "start",
-    "القائمة",
-    "ابدأ",
-    "ابدء",
-    "main menu",
-  ];
-  const langCommands = ["lang", "language", "اللغة", "تغيير اللغة"];
-  const resetCommands = ["reset", "restart", "ابدأ من جديد", "اعادة", "إعادة"];
-  const supportCommands = ["support", "دعم"];
-  const agentCommands = ["agent", "موظف", "بشر", "human"];
-  const moreCommands = ["more", "المزيد"];
+  // 1) If no language selected yet -> force language selection first
+  if (!session.lang || session.state === "CHOOSE_LANGUAGE") {
+    // Optional support typing language manually
+    const lower = normalizeLower(text);
 
-  if (menuCommands.includes(cmd)) {
-    const updated = setSession(from, { state: "MAIN_MENU" });
-    await sendMainMenu(from, updated);
-    return true;
-  }
-
-  if (moreCommands.includes(cmd)) {
-    const updated = setSession(from, { state: "MORE_MENU" });
-    await sendMoreMenu(from, updated);
-    return true;
-  }
-
-  if (langCommands.includes(cmd)) {
-    setSession(from, { state: "LANG_SELECT" });
-    await sendLanguageMenu(from);
-    return true;
-  }
-
-  if (resetCommands.includes(cmd)) {
-    // keeps tenant and lang if available, clears flow data
-    resetToMainMenu(from);
-    const updated = getSession(from);
-
-    if (!updated.lang) {
-      await sendLanguageMenu(from);
-    } else {
-      await sendText(
-        from,
-        t(
-          updated.lang,
-          "تمت إعادة ضبط المحادثة ✅",
-          "Conversation has been reset ✅",
-        ),
-      );
+    if (["ar", "arabic", "عربي", "العربية"].includes(lower)) {
+      const updated = setSession(from, { lang: "ar", state: "MAIN_MENU" });
       await sendMainMenu(from, updated);
+      return;
     }
-    return true;
-  }
 
-  if (supportCommands.includes(cmd)) {
-    const tenant = getTenant(session.tenantId);
-    const updated = setSession(from, { state: "MORE_MENU" });
+    if (["en", "english", "انجليزي", "english language"].includes(lower)) {
+      const updated = setSession(from, { lang: "en", state: "MAIN_MENU" });
+      await sendMainMenu(from, updated);
+      return;
+    }
 
-    await sendText(
-      from,
-      t(
-        updated.lang || "ar",
-        `☎️ الدعم الفني\nيمكنك التواصل على:\n${tenant.supportPhone}`,
-        `☎️ Support\nYou can contact us at:\n${tenant.supportPhone}`,
-      ),
-    );
-    await sendMoreMenu(from, updated);
-    return true;
-  }
-
-  if (agentCommands.includes(cmd)) {
-    setSession(from, { state: "HANDOVER_REASON" });
-    await sendText(
-      from,
-      t(
-        session.lang || "ar",
-        "👨‍💼 تحويل لموظف\nمن فضلك اكتب سبب طلب التحويل أو سؤالك باختصار:",
-        "👨‍💼 Human handover\nPlease write the reason for handover or your question briefly:",
-      ),
-    );
-    return true;
-  }
-
-  return false;
-}
-
-async function handleTextMessage(from, session, textBody) {
-  const lang = session.lang || detectLanguage(textBody);
-  const tenant = getTenant(session.tenantId);
-
-  // 1) If language not selected yet => force language menu
-  if (!session.lang || session.state === "LANG_SELECT") {
+    // Any text before language selection => ask language menu again
     await sendLanguageMenu(from);
     return;
   }
 
-  // 2) Global commands
-  const handledGlobal = await handleGlobalTextCommands(from, session, textBody);
-  if (handledGlobal) return;
+  // 2) Global menu command (works from most states)
+  // Important: don't break form flow unless user explicitly asks menu/back/start
+  if (isMenuCommand(text)) {
+    const updated = setSession(from, { state: "MAIN_MENU" });
+    await sendMainMenu(from, updated);
+    return;
+  }
 
-  // 3) State-based flows
+  // 3) Greeting behavior (optional)
+  if (isGreeting(text) && session.state === "MAIN_MENU") {
+    await sendMainMenu(from, session);
+    return;
+  }
+
+  // 4) State-based form flow
   if (session.state === "BOOK_MEETING_NAME") {
     setSession(from, {
       state: "BOOK_MEETING_EMAIL",
-      data: { name: textBody },
+      data: { name: text },
     });
 
     await sendText(
       from,
       t(
-        lang,
+        session.lang,
         "ممتاز ✅\nمن فضلك اكتب الإيميل الخاص بك 📧",
         "Great ✅\nPlease enter your email address 📧",
       ),
@@ -723,13 +361,13 @@ async function handleTextMessage(from, session, textBody) {
   }
 
   if (session.state === "BOOK_MEETING_EMAIL") {
-    if (!isValidEmail(textBody)) {
+    if (!isValidEmail(text)) {
       await sendText(
         from,
         t(
-          lang,
-          "❌ الإيميل غير صحيح.\nمثال: example@mail.com",
-          "❌ Invalid email format.\nExample: example@mail.com",
+          session.lang,
+          "❌ الإيميل غير صحيح.\nمثال: example@mail.com\n\nأو أرسل )القائمة( للرجوع.",
+          "❌ Invalid email format.\nExample: example@mail.com\n\nOr send )menu( to go back.",
         ),
       );
       return;
@@ -737,13 +375,13 @@ async function handleTextMessage(from, session, textBody) {
 
     setSession(from, {
       state: "BOOK_MEETING_TOPIC",
-      data: { email: textBody },
+      data: { email: text },
     });
 
     await sendText(
       from,
       t(
-        lang,
+        session.lang,
         "ممتاز ✅\nاكتب باختصار موضوع الاجتماع )مثال: مناقشة البوت / التسعير / التكامل(",
         "Great ✅\nPlease write a short meeting topic )e.g. bot discussion / pricing / integration(",
       ),
@@ -754,22 +392,10 @@ async function handleTextMessage(from, session, textBody) {
   if (session.state === "BOOK_MEETING_TOPIC") {
     const updated = setSession(from, {
       state: "MAIN_MENU",
-      data: { topic: textBody },
+      data: { topic: text },
     });
 
-    const meetingEntry = {
-      tenantId: updated.tenantId,
-      tenantName: lang === "ar" ? tenant.nameAr : tenant.nameEn,
-      from,
-      lang: updated.lang,
-      name: updated.data.name,
-      email: updated.data.email,
-      topic: updated.data.topic,
-      createdAt: new Date().toISOString(),
-    };
-    meetingRequests.push(meetingEntry);
-
-    console.log("DEMO meeting request saved:", meetingEntry);
+    const tenant = tenants[updated.tenantId] || tenants.default;
 
     await sendText(
       from,
@@ -798,365 +424,142 @@ Send "menu" to show options again.`,
       ),
     );
 
-    resetToMainMenu(from);
+    resetCollectedData(from);
     return;
   }
 
-  // Lead qualification
-  if (session.state === "LEAD_OTHER_SERVICE_TEXT") {
-    setSession(from, {
-      state: "LEAD_BUDGET",
-      data: { leadService: textBody },
-    });
-    await sendLeadBudgetButtons(from, session);
-    return;
-  }
-
-  if (session.state === "LEAD_NOTES") {
-    const updated = setSession(from, {
-      state: "MAIN_MENU",
-      data: { notes: textBody },
-    });
-
-    const score = classifyLead(updated.data);
-    const leadEntry = {
-      tenantId: updated.tenantId,
-      from,
-      lang: updated.lang,
-      service: updated.data.leadService,
-      budget: updated.data.budget,
-      timeline: updated.data.timeline,
-      notes: updated.data.notes,
-      score,
-      createdAt: new Date().toISOString(),
-    };
-    leadSubmissions.push(leadEntry);
-
-    console.log("DEMO lead saved:", leadEntry);
-
+  // 5) If user is in SERVICES_MENU and sends text instead of button
+  if (session.state === "SERVICES_MENU") {
     await sendText(
       from,
       t(
-        updated.lang,
-        `✅ تم تسجيل طلبك بنجاح
-
-📌 الخدمة: ${updated.data.leadService}
-💰 الميزانية: ${updated.data.budget}
-⏱️ وقت البدء: ${updated.data.timeline}
-📝 ملاحظات: ${updated.data.notes || "لا يوجد"}
-
-🔎 تصنيف مبدئي )ديمو(: ${score}
-
-سيتم التواصل معك قريبًا.
-أرسل "القائمة" للرجوع.`,
-        `✅ Your request has been submitted successfully
-
-📌 Service: ${updated.data.leadService}
-💰 Budget: ${updated.data.budget}
-⏱️ Start Time: ${updated.data.timeline}
-📝 Notes: ${updated.data.notes || "N/A"}
-
-🔎 Initial score )demo(: ${score}
-
-We will contact you soon.
-Send "menu" to return.`,
+        session.lang,
+        "من فضلك اختر من الأزرار 👇\nأو أرسل )القائمة( للرجوع.",
+        "Please choose using the buttons 👇\nOr send )menu( to return.",
       ),
     );
-
+    await sendServicesMenu(from, session);
     return;
   }
 
-  // Human handover reason
-  if (session.state === "HANDOVER_REASON") {
-    const updated = setSession(from, {
-      state: "MAIN_MENU",
-      data: { handoverReason: textBody },
-    });
-
-    const ticket = {
-      tenantId: updated.tenantId,
-      from,
-      lang: updated.lang,
-      reason: updated.data.handoverReason,
-      status: "OPEN",
-      createdAt: new Date().toISOString(),
-    };
-    handoverTickets.push(ticket);
-
-    console.log("DEMO handover ticket:", ticket);
-
-    const inHours = isWithinWorkingHours(tenant);
-
-    await sendText(
-      from,
-      t(
-        updated.lang,
-        inHours
-          ? `✅ تم تحويل طلبك لأحد الموظفين )ديمو(\n📝 السبب: ${updated.data.handoverReason}\n☎️ رقم الدعم: ${tenant.supportPhone}\nسيتم الرد عليك قريبًا.`
-          : `✅ تم تسجيل طلب التحويل )ديمو(\n📝 السبب: ${updated.data.handoverReason}\n⏰ خارج أوقات العمل حاليًا، وسيتم الرد عليك في أقرب وقت عمل.\n☎️ رقم الدعم: ${tenant.supportPhone}`,
-        inHours
-          ? `✅ Your request has been handed over to an agent )demo(\n📝 Reason: ${updated.data.handoverReason}\n☎️ Support: ${tenant.supportPhone}\nYou will be contacted soon.`
-          : `✅ Your handover request has been recorded )demo(\n📝 Reason: ${updated.data.handoverReason}\n⏰ We are currently outside working hours. We will respond during business hours.\n☎️ Support: ${tenant.supportPhone}`,
-      ),
-    );
-
-    return;
-  }
-
-  // 4) FAQ simple fallback before main menu
-  const faqAnswer = findFaqAnswer(tenant, lang, textBody);
-  if (faqAnswer) {
-    await sendText(from, faqAnswer);
-    await sendMoreMenu(from, session);
-    return;
-  }
-
-  // 5) Default behavior => main menu
-  const updated = setSession(from, { state: "MAIN_MENU" });
-  await sendMainMenu(from, updated);
+  // 6) Default text behavior in MAIN_MENU:
+  // لا نعيد المينيو لكل رسالة تلقائيًا، فقط نرد رسالة توجيه بسيطة
+  await sendText(
+    from,
+    t(
+      session.lang,
+      "أرسل )القائمة( لعرض الخيارات، أو اختر من الأزرار إذا كانت ظاهرة 👇",
+      "Send )menu( to show options, or use the visible buttons 👇",
+    ),
+  );
 }
 
-async function handleInteractiveMessage(from, session, incomingMessage) {
-  const buttonReply = incomingMessage?.interactive?.button_reply;
-  if (!buttonReply) return false;
+async function handleInteractiveButton(from, buttonId) {
+  const session = getSession(from);
 
-  const selectedId = buttonReply.id;
-  const tenant = getTenant(session.tenantId);
-
-  // Language selection
-  if (selectedId === "lang_ar") {
-    const updated = setSession(from, { lang: "ar", state: "MAIN_MENU" });
-
-    await sendText(from, "تم اختيار اللغة العربية ✅");
-
-    if (!isWithinWorkingHours(tenant)) {
-      await sendAfterHoursNotice(from, updated);
+  // If language not selected yet -> only accept language buttons
+  if (!session.lang || session.state === "CHOOSE_LANGUAGE") {
+    if (buttonId === "lang_ar") {
+      const updated = setSession(from, { lang: "ar", state: "MAIN_MENU" });
+      await sendMainMenu(from, updated);
+      return;
     }
 
-    await sendMainMenu(from, updated);
-    return true;
-  }
-
-  if (selectedId === "lang_en") {
-    const updated = setSession(from, { lang: "en", state: "MAIN_MENU" });
-
-    await sendText(from, "English selected ✅");
-
-    if (!isWithinWorkingHours(tenant)) {
-      await sendAfterHoursNotice(from, updated);
+    if (buttonId === "lang_en") {
+      const updated = setSession(from, { lang: "en", state: "MAIN_MENU" });
+      await sendMainMenu(from, updated);
+      return;
     }
 
-    await sendMainMenu(from, updated);
-    return true;
+    await sendLanguageMenu(from);
+    return;
   }
 
-  const lang = session.lang || "ar";
-
-  // Main / Navigation
-  if (selectedId === "services") {
+  // Main actions
+  if (buttonId === "services") {
     const updated = setSession(from, { state: "SERVICES_MENU" });
     await sendServicesMenu(from, updated);
-    return true;
+    return;
   }
 
-  if (selectedId === "more_menu") {
-    const updated = setSession(from, { state: "MORE_MENU" });
-    await sendMoreMenu(from, updated);
-    return true;
-  }
-
-  if (selectedId === "back_main") {
-    const updated = setSession(from, { state: "MAIN_MENU" });
-    await sendMainMenu(from, updated);
-    return true;
-  }
-
-  if (selectedId === "support") {
-    await sendText(
-      from,
-      t(
-        lang,
-        `☎️ الدعم الفني\nيمكنك التواصل على:\n${tenant.supportPhone}\n\nأرسل "القائمة" للرجوع.`,
-        `☎️ Support\nYou can contact us at:\n${tenant.supportPhone}\n\nSend "menu" to go back.`,
-      ),
-    );
-    return true;
-  }
-
-  if (selectedId === "talk_agent") {
-    setSession(from, { state: "HANDOVER_REASON" });
-
-    if (!isWithinWorkingHours(tenant)) {
-      await sendAfterHoursNotice(from, session);
-    }
-
-    await sendText(
-      from,
-      t(
-        lang,
-        "👨‍💼 تحويل لموظف\nمن فضلك اكتب سبب طلب التحويل أو سؤالك باختصار:",
-        "👨‍💼 Human handover\nPlease write the reason for handover or your question briefly:",
-      ),
-    );
-    return true;
-  }
-
-  // Booking meeting
-  if (selectedId === "book_meeting") {
+  if (buttonId === "book_meeting") {
     setSession(from, {
       state: "BOOK_MEETING_NAME",
       data: { name: "", email: "", topic: "" },
     });
 
-    if (!isWithinWorkingHours(tenant)) {
-      await sendAfterHoursNotice(from, session);
-    }
-
     await sendText(
       from,
       t(
-        lang,
+        session.lang,
         "📅 حجز اجتماع\nمن فضلك اكتب اسمك الكامل:",
         "📅 Book Meeting\nPlease enter your full name:",
       ),
     );
-    return true;
+    return;
   }
 
-  // Start lead flow
-  if (selectedId === "lead_start") {
-    setSession(from, {
-      state: "LEAD_SERVICE",
-      data: { leadService: "", budget: "", timeline: "", notes: "" },
-    });
-
-    if (!isWithinWorkingHours(tenant)) {
-      await sendAfterHoursNotice(from, session);
-    }
-
-    await sendLeadServiceButtons(from, session);
-    return true;
-  }
-
-  // Services details
-  if (selectedId === "srv_whatsapp_bot" || selectedId === "srv_dashboard") {
-    const item = (tenant.services || []).find((s) => s.id === selectedId);
-
-    if (item) {
-      await sendText(from, lang === "ar" ? item.descAr : item.descEn);
-    } else {
-      await sendText(
-        from,
-        t(
-          lang,
-          "📦 تفاصيل الخدمة غير متوفرة حاليًا.",
-          "📦 Service details are not available right now.",
-        ),
-      );
-    }
-
-    await sendMoreMenu(from, session);
-    return true;
-  }
-
-  // Lead service selection
-  if (selectedId === "lead_srv_whatsapp") {
-    setSession(from, {
-      state: "LEAD_BUDGET",
-      data: { leadService: t(lang, "بوت واتساب", "WhatsApp Bot") },
-    });
-    await sendLeadBudgetButtons(from, session);
-    return true;
-  }
-
-  if (selectedId === "lead_srv_dashboard") {
-    setSession(from, {
-      state: "LEAD_BUDGET",
-      data: { leadService: t(lang, "لوحة تحكم", "Dashboard") },
-    });
-    await sendLeadBudgetButtons(from, session);
-    return true;
-  }
-
-  if (selectedId === "lead_srv_other") {
-    setSession(from, { state: "LEAD_OTHER_SERVICE_TEXT" });
-    await sendText(
-      from,
-      t(
-        lang,
-        "اكتب نوع الخدمة المطلوبة باختصار:",
-        "Please write the required service type briefly:",
-      ),
-    );
-    return true;
-  }
-
-  // Lead budget
-  if (["budget_low", "budget_mid", "budget_high"].includes(selectedId)) {
-    const budgetMap = {
-      budget_low: t(lang, "منخفضة", "Low"),
-      budget_mid: t(lang, "متوسطة", "Medium"),
-      budget_high: t(lang, "مرتفعة", "High"),
-    };
-
-    setSession(from, {
-      state: "LEAD_TIMELINE",
-      data: { budget: budgetMap[selectedId] },
-    });
-
-    await sendLeadTimelineButtons(from, session);
-    return true;
-  }
-
-  // Lead timeline
-  if (
-    ["timeline_urgent", "timeline_soon", "timeline_later"].includes(selectedId)
-  ) {
-    const timelineMap = {
-      timeline_urgent: t(lang, "فوري", "Urgent"),
-      timeline_soon: t(lang, "خلال شهر", "Within 1 month"),
-      timeline_later: t(lang, "لاحقًا", "Later"),
-    };
-
-    setSession(from, {
-      state: "LEAD_NOTES",
-      data: { timeline: timelineMap[selectedId] },
-    });
+  if (buttonId === "support") {
+    const tenant = tenants[session.tenantId] || tenants.default;
 
     await sendText(
       from,
       t(
-        lang,
-        "📝 اكتب أي تفاصيل إضافية )اختياري( ثم أرسلها الآن.",
-        "📝 Please write any extra details )optional( and send now.",
+        session.lang,
+        `☎️ الدعم الفني\nيمكنك التواصل على:\n${tenant.supportPhone}\n\nأرسل "القائمة" للرجوع.`,
+        `☎️ Support\nYou can contact us at:\n${tenant.supportPhone}\n\nSend "menu" to go back.`,
       ),
     );
-    return true;
+    return;
   }
 
-  return false;
-}
+  // Services submenu
+  if (buttonId === "srv_whatsapp_bot") {
+    // نخلي الحالة كما هي SERVICES_MENU
+    await sendText(
+      from,
+      t(
+        session.lang,
+        "🤖 خدمة بوت واتساب\nبوت ذكي للرد الآلي + توجيه العملاء + ربط بلوحة تحكم + قابلية التوسع لعدة عملاء.",
+        "🤖 WhatsApp Bot Service\nSmart auto-reply bot + customer routing + dashboard integration + scalable for multi-client usage.",
+      ),
+    );
 
-// ===============================
-// GET: Meta webhook verification
-// ===============================
-export async function GET(req) {
-  const searchParams = req.nextUrl.searchParams;
-
-  const mode = searchParams.get("hub.mode");
-  const token = searchParams.get("hub.verify_token");
-  const challenge = searchParams.get("hub.challenge");
-
-  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
-
-  if (mode === "subscribe" && token && token === verifyToken) {
-    return new NextResponse(challenge ?? "", {
-      status: 200,
-      headers: { "Content-Type": "text/plain" },
-    });
+    const updated = setSession(from, { state: "SERVICES_MENU" });
+    await sendServicesMenu(from, updated);
+    return;
   }
 
-  return NextResponse.json({ error: "Verification failed" }, { status: 403 });
+  if (buttonId === "srv_dashboard") {
+    await sendText(
+      from,
+      t(
+        session.lang,
+        "📊 لوحة التحكم\nإدارة المحادثات / الاشتراكات / المستخدمين / تقارير الأداء بشكل مركزي.",
+        "📊 Dashboard\nManage chats / subscriptions / users / performance reports centrally.",
+      ),
+    );
+
+    const updated = setSession(from, { state: "SERVICES_MENU" });
+    await sendServicesMenu(from, updated);
+    return;
+  }
+
+  if (buttonId === "back_main") {
+    const updated = setSession(from, { state: "MAIN_MENU" });
+    await sendMainMenu(from, updated);
+    return;
+  }
+
+  // Unknown button fallback
+  await sendText(
+    from,
+    t(
+      session.lang,
+      "تم استلام اختيار غير معروف. أرسل )القائمة( للبدء من جديد.",
+      "Unknown selection received. Send )menu( to start again.",
+    ),
+  );
 }
 
 // ===============================
@@ -1170,7 +573,7 @@ export async function POST(req) {
     const change = body?.entry?.[0]?.changes?.[0];
     const value = change?.value;
 
-    // Ignore non-message events
+    // Ignore non-message events (statuses, delivery, etc.)
     if (!value?.messages?.length) {
       return NextResponse.json(
         { received: true, type: "non-message-event" },
@@ -1188,61 +591,64 @@ export async function POST(req) {
       );
     }
 
-    const session = getSession(from);
-
-    // TEXT
+    // 1) Text message
     if (incomingMessage.type === "text") {
-      const textBody = normalizeText(incomingMessage?.text?.body);
-
-      // لو لسه اللغة غير مختارة، ممكن نستخدم detect كـ hint فقط )بدون تثبيت(
-      if (!session.lang && textBody) {
-        // optional hint only; do not lock language
-        const hintLang = detectLanguage(textBody);
-        setSession(from, { meta: { hintLang } });
-      }
-
-      await handleTextMessage(from, getSession(from), textBody);
+      const textBody = incomingMessage?.text?.body || "";
+      await handleTextMessage(from, textBody);
 
       return NextResponse.json(
-        { received: true, replied: true },
+        { received: true, replied: true, type: "text" },
         { status: 200 },
       );
     }
 
-    // INTERACTIVE BUTTONS
+    // 2) Interactive button reply
     if (incomingMessage.type === "interactive") {
-      const handled = await handleInteractiveMessage(
-        from,
-        getSession(from),
-        incomingMessage,
-      );
+      const buttonReply = incomingMessage?.interactive?.button_reply;
 
-      if (handled) {
+      if (buttonReply?.id) {
+        await handleInteractiveButton(from, buttonReply.id);
+
         return NextResponse.json(
-          { received: true, replied: true },
+          { received: true, replied: true, type: "interactive-button" },
           { status: 200 },
         );
       }
-    }
 
-    // Fallback for unsupported types
-    const fallbackSession = getSession(from);
-
-    if (!fallbackSession.lang) {
-      await sendLanguageMenu(from);
-    } else {
+      // لو interactive لكن مش button_reply (مثلا list_reply مستقبلاً)
+      const session = getSession(from);
       await sendText(
         from,
         t(
-          fallbackSession.lang,
-          "حالياً البوت يدعم النصوص والأزرار فقط ✅\nأرسل أي رسالة لعرض القائمة.",
-          "Currently, the bot supports text and buttons only ✅\nSend any message to view the menu.",
+          session.lang || "ar",
+          "تم استلام تفاعل غير مدعوم حاليًا. أرسل )القائمة( للبدء.",
+          "Unsupported interactive reply received for now. Send )menu( to start.",
         ),
+      );
+
+      return NextResponse.json(
+        { received: true, replied: true, type: "interactive-unsupported" },
+        { status: 200 },
       );
     }
 
+    // 3) Unsupported types fallback
+    const session = getSession(from);
+    await sendText(
+      from,
+      t(
+        session.lang || "ar",
+        "حالياً البوت يدعم النصوص والأزرار فقط ✅\nأرسل )القائمة( أو ابدأ باختيار اللغة.",
+        "Currently, the bot supports text and buttons only ✅\nSend )menu( or start by choosing a language.",
+      ),
+    );
+
+    if (!session.lang || session.state === "CHOOSE_LANGUAGE") {
+      await sendLanguageMenu(from);
+    }
+
     return NextResponse.json(
-      { received: true, replied: true },
+      { received: true, replied: true, type: "unsupported" },
       { status: 200 },
     );
   } catch (error) {
