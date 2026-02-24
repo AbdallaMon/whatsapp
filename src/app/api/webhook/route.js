@@ -1,282 +1,49 @@
 import { NextResponse } from "next/server";
+import nodemailer from "nodemailer";
 
 export const runtime = "nodejs";
 
-/**
- * Demo WhatsApp Bot (Next.js Route) - English Only
- * FIXES:
- * - English only (removed language selection flow)
- * - Better in-memory persistence using globalThis (helps across hot reloads)
- * - Webhook duplicate message protection (Meta retries / duplicate delivery)
- * - Session TTL cleanup
- * - Cleaner state transitions
- *
- * NOTE:
- * - Still in-memory only (NO DB). Sessions can be lost on server restart/redeploy.
- * - For production reliability use Redis / DB.
- */
-
-// =====================================================
-// Global in-memory store (survives module reload in same Node process)
-// =====================================================
-const SESSION_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
-const DEDUPE_TTL_MS = 1000 * 60 * 10; // 10 minutes for processed message IDs
-
-function getGlobalStore() {
-  if (!globalThis.__WA_BOT_STORE__) {
-    globalThis.__WA_BOT_STORE__ = {
-      userSessions: new Map(), // key: wa_id => session
-      processedMessageIds: new Map(), // key: messageId => timestamp
-      lastCleanupAt: 0,
-    };
-  }
-  return globalThis.__WA_BOT_STORE__;
-}
-
-const store = getGlobalStore();
-
-// States:
-// - MAIN_MENU
-// - SERVICES_MENU
-// - BOOK_MEETING_NAME
-// - BOOK_MEETING_EMAIL
-// - BOOK_MEETING_TOPIC
-
 // ===============================
-// Multi-tenant demo config
+// Email Config (from env)
 // ===============================
-const tenants = {
-  default: {
-    id: "default",
-    nameEn: "Main Company",
-    meetingLabelEn: "Book Meeting",
-    supportPhone: "+201000000000",
-  },
-  premium: {
-    id: "premium",
-    nameEn: "Premium Client",
-    meetingLabelEn: "Schedule Call",
-    supportPhone: "+201111111111",
-  },
-};
+const ALERT_EMAIL_TO = process.env.ALERT_EMAIL_TO || "abdotlos60@gmail.com";
 
-function resolveTenantId(from) {
-  const lastDigit = Number(from?.[from.length - 1] || 0);
-  return Number.isNaN(lastDigit)
-    ? "default"
-    : lastDigit % 2 === 0
-      ? "premium"
-      : "default";
-}
+function getMailer() {
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT || 465);
+  const secure = String(process.env.SMTP_SECURE || "true") === "true";
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
 
-// ===============================
-// Helpers
-// ===============================
-function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((email || "").trim());
-}
-
-function normalizeText(text) {
-  return (text || "").trim();
-}
-
-function normalizeLower(text) {
-  return normalizeText(text).toLowerCase();
-}
-
-function isMenuCommand(text) {
-  const v = normalizeLower(text);
-  return ["menu", "start", "main menu", "back", "home"].includes(v);
-}
-
-function isGreeting(text) {
-  const v = normalizeLower(text);
-  return ["hi", "hello", "hey", "good morning", "good evening"].includes(v);
-}
-
-function cleanupStoreIfNeeded() {
-  const now = Date.now();
-
-  // run cleanup every ~2 minutes max
-  if (now - store.lastCleanupAt < 1000 * 60 * 2) return;
-  store.lastCleanupAt = now;
-
-  // Cleanup sessions
-  for (const [waId, session] of store.userSessions.entries()) {
-    if (!session?.updatedAt || now - session.updatedAt > SESSION_TTL_MS) {
-      store.userSessions.delete(waId);
-    }
+  if (!host || !port || !user || !pass) {
+    throw new Error("Missing SMTP env vars");
   }
 
-  // Cleanup processed message IDs
-  for (const [messageId, ts] of store.processedMessageIds.entries()) {
-    if (now - ts > DEDUPE_TTL_MS) {
-      store.processedMessageIds.delete(messageId);
-    }
-  }
-}
-
-function isDuplicateMessage(messageId) {
-  if (!messageId) return false;
-  cleanupStoreIfNeeded();
-
-  if (store.processedMessageIds.has(messageId)) {
-    return true;
-  }
-
-  store.processedMessageIds.set(messageId, Date.now());
-  return false;
-}
-
-function getSession(from) {
-  cleanupStoreIfNeeded();
-
-  let session = store.userSessions.get(from);
-
-  if (!session) {
-    session = {
-      state: "MAIN_MENU",
-      lang: "en", // forced English only
-      tenantId: resolveTenantId(from),
-      data: {
-        name: "",
-        email: "",
-        topic: "",
-      },
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    store.userSessions.set(from, session);
-  }
-
-  return session;
-}
-
-function setSession(from, patch) {
-  const current = getSession(from);
-
-  const next = {
-    ...current,
-    ...patch,
-    data: {
-      ...current.data,
-      ...(patch.data || {}),
-    },
-    updatedAt: Date.now(),
-  };
-
-  store.userSessions.set(from, next);
-  return next;
-}
-
-function resetCollectedData(from) {
-  const current = getSession(from);
-  store.userSessions.set(from, {
-    ...current,
-    data: { name: "", email: "", topic: "" },
-    updatedAt: Date.now(),
-  });
-}
-
-function resetToMain(from) {
-  const current = getSession(from);
-  store.userSessions.set(from, {
-    ...current,
-    state: "MAIN_MENU",
-    data: { name: "", email: "", topic: "" },
-    updatedAt: Date.now(),
-  });
-}
-
-// ===============================
-// WhatsApp API
-// ===============================
-async function sendWhatsAppRequest(payload) {
-  const token = process.env.WHATSAPP_ACCESS_TOKEN;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-
-  if (!token || !phoneNumberId) {
-    throw new Error(
-      "Missing WHATSAPP_ACCESS_TOKEN or WHATSAPP_PHONE_NUMBER_ID",
-    );
-  }
-
-  const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await res.json();
-
-  if (!res.ok) {
-    console.error("WhatsApp API error:", data);
-    throw new Error(data?.error?.message || "Failed to send WhatsApp message");
-  }
-
-  return data;
-}
-
-async function sendText(to, body) {
-  return sendWhatsAppRequest({
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body },
-  });
-}
-
-async function sendButtons(to, bodyText, buttons) {
-  return sendWhatsAppRequest({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
-      body: { text: bodyText },
-      action: {
-        buttons: buttons.map((btn) => ({
-          type: "reply",
-          reply: {
-            id: btn.id,
-            title: btn.title,
-          },
-        })),
-      },
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: {
+      user,
+      pass,
     },
   });
 }
 
-// ===============================
-// Menus / Screens (English only)
-// ===============================
-async function sendMainMenu(to, session) {
-  const tenant = tenants[session.tenantId] || tenants.default;
+async function sendEmailAlert({ subject, text, html }) {
+  const transporter = getMailer();
 
-  const title = `Hello 👋
-Welcome to ${tenant.nameEn}
-Choose an option:`;
+  const from = process.env.SMTP_FROM || "Whatsapp <info@example.com>";
 
-  const meetingLabel = tenant.meetingLabelEn;
+  const info = await transporter.sendMail({
+    from,
+    to: ALERT_EMAIL_TO,
+    subject,
+    text,
+    html,
+  });
 
-  return sendButtons(to, title, [
-    { id: "services", title: "Services" },
-    { id: "book_meeting", title: meetingLabel },
-    { id: "support", title: "Support" },
-  ]);
-}
-
-async function sendServicesMenu(to) {
-  return sendButtons(to, "📦 Demo Services\nChoose a service to learn more:", [
-    { id: "srv_whatsapp_bot", title: "WhatsApp Bot" },
-    { id: "srv_dashboard", title: "Dashboard" },
-    { id: "back_main", title: "Back" },
-  ]);
+  return info;
 }
 
 // ===============================
@@ -291,7 +58,7 @@ export async function GET(req) {
 
   const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
 
-  if (mode === "subscribe" && token && token === verifyToken) {
+  if (mode === "subscribe" && token === verifyToken) {
     return new NextResponse(challenge ?? "", {
       status: 200,
       headers: { "Content-Type": "text/plain" },
@@ -302,286 +69,130 @@ export async function GET(req) {
 }
 
 // ===============================
-// Handlers
+// Helpers
 // ===============================
-async function handleTextMessage(from, textBody) {
-  const session = getSession(from);
-  const text = normalizeText(textBody);
-
-  // 1) Global menu command
-  if (isMenuCommand(text)) {
-    const updated = setSession(from, { state: "MAIN_MENU" });
-    await sendMainMenu(from, updated);
-    return;
-  }
-
-  // 2) Greeting behavior in MAIN_MENU
-  if (isGreeting(text) && session.state === "MAIN_MENU") {
-    await sendMainMenu(from, session);
-    return;
-  }
-
-  // 3) State-based form flow
-  if (session.state === "BOOK_MEETING_NAME") {
-    if (!text) {
-      await sendText(
-        from,
-        'Please enter your full name.\nOr send "menu" to go back.',
-      );
-      return;
-    }
-
-    setSession(from, {
-      state: "BOOK_MEETING_EMAIL",
-      data: { name: text },
-    });
-
-    await sendText(from, "Great ✅\nPlease enter your email address 📧");
-    return;
-  }
-
-  if (session.state === "BOOK_MEETING_EMAIL") {
-    if (!isValidEmail(text)) {
-      await sendText(
-        from,
-        '❌ Invalid email format.\nExample: example@mail.com\n\nOr send "menu" to go back.',
-      );
-      return;
-    }
-
-    setSession(from, {
-      state: "BOOK_MEETING_TOPIC",
-      data: { email: text },
-    });
-
-    await sendText(
-      from,
-      "Great ✅\nPlease write a short meeting topic )e.g. bot discussion / pricing / integration(",
-    );
-    return;
-  }
-
-  if (session.state === "BOOK_MEETING_TOPIC") {
-    if (!text) {
-      await sendText(
-        from,
-        'Please write a short topic.\nOr send "menu" to go back.',
-      );
-      return;
-    }
-
-    const updated = setSession(from, {
-      state: "MAIN_MENU",
-      data: { topic: text },
-    });
-
-    const tenant = tenants[updated.tenantId] || tenants.default;
-
-    await sendText(
-      from,
-      `✅ Meeting request submitted successfully
-
-👤 Name: ${updated.data.name}
-📧 Email: ${updated.data.email}
-📝 Topic: ${updated.data.topic}
-
-Our team will contact you soon.
-☎️ Support: ${tenant.supportPhone}
-
-Send "menu" to show options again.`,
-    );
-
-    resetCollectedData(from);
-    return;
-  }
-
-  // 4) If user is in SERVICES_MENU and sends text instead of button
-  if (session.state === "SERVICES_MENU") {
-    await sendText(
-      from,
-      'Please choose using the buttons 👇\nOr send "menu" to return.',
-    );
-    await sendServicesMenu(from);
-    return;
-  }
-
-  // 5) Default text behavior in MAIN_MENU:
-  // Do NOT resend menu on every message automatically
-  await sendText(
-    from,
-    'Send "menu" to show options, or use the visible buttons 👇',
-  );
+function escapeHtml(str = "") {
+  return String(str)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
-async function handleInteractiveButton(from, buttonId) {
-  const session = getSession(from);
+function extractMessageText(incoming) {
+  const msgType = incoming?.type || "unknown";
 
-  // Main actions
-  if (buttonId === "services") {
-    const updated = setSession(from, { state: "SERVICES_MENU" });
-    await sendServicesMenu(from, updated);
-    return;
+  if (msgType === "text") {
+    return incoming?.text?.body || "";
   }
 
-  if (buttonId === "book_meeting") {
-    setSession(from, {
-      state: "BOOK_MEETING_NAME",
-      data: { name: "", email: "", topic: "" },
-    });
-
-    await sendText(from, "📅 Book Meeting\nPlease enter your full name:");
-    return;
+  if (msgType === "interactive") {
+    const btn = incoming?.interactive?.button_reply?.title;
+    const list = incoming?.interactive?.list_reply?.title;
+    return `[Interactive Reply] ${btn || list || "No title"}`;
   }
 
-  if (buttonId === "support") {
-    const tenant = tenants[session.tenantId] || tenants.default;
-
-    await sendText(
-      from,
-      `☎️ Support\nYou can contact us at:\n${tenant.supportPhone}\n\nSend "menu" to go back.`,
-    );
-    return;
+  if (msgType === "image") {
+    const caption = incoming?.image?.caption || "";
+    return `[Image message]${caption ? `\nCaption: ${caption}` : ""}`;
   }
 
-  // Services submenu
-  if (buttonId === "srv_whatsapp_bot") {
-    await sendText(
-      from,
-      "🤖 WhatsApp Bot Service\nSmart auto-reply bot + customer routing + dashboard integration + scalable for multi-client usage.",
-    );
-
-    const updated = setSession(from, { state: "SERVICES_MENU" });
-    await sendServicesMenu(from, updated);
-    return;
+  if (msgType === "document") {
+    const filename = incoming?.document?.filename || "Unknown file";
+    const caption = incoming?.document?.caption || "";
+    return `[Document message]\nFile: ${filename}${caption ? `\nCaption: ${caption}` : ""}`;
   }
 
-  if (buttonId === "srv_dashboard") {
-    await sendText(
-      from,
-      "📊 Dashboard\nManage chats / subscriptions / users / performance reports centrally.",
-    );
-
-    const updated = setSession(from, { state: "SERVICES_MENU" });
-    await sendServicesMenu(from, updated);
-    return;
+  if (msgType === "audio") return "[Audio message]";
+  if (msgType === "video") return "[Video message]";
+  if (msgType === "sticker") return "[Sticker message]";
+  if (msgType === "location") {
+    const loc = incoming?.location;
+    return `[Location]\nLat: ${loc?.latitude}\nLng: ${loc?.longitude}\nName: ${loc?.name || ""}\nAddress: ${loc?.address || ""}`;
   }
 
-  if (buttonId === "back_main") {
-    const updated = setSession(from, { state: "MAIN_MENU" });
-    await sendMainMenu(from, updated);
-    return;
-  }
-
-  // Unknown button fallback
-  await sendText(
-    from,
-    'Unknown selection received. Send "menu" to start again.',
-  );
+  return `[Unsupported message type: ${msgType}]`;
 }
 
 // ===============================
-// POST: Receive incoming messages/events
+// POST: Receive incoming messages and send email alert
 // ===============================
 export async function POST(req) {
   try {
     const body = await req.json();
-    console.log("WhatsApp Webhook Event:", JSON.stringify(body, null, 2));
+    console.log("Webhook Event:", JSON.stringify(body, null, 2));
 
-    const change = body?.entry?.[0]?.changes?.[0];
-    const value = change?.value;
+    const value = body?.entry?.[0]?.changes?.[0]?.value;
 
-    // Ignore non-message events (statuses, delivery, etc.)
+    // Ignore non-message events (statuses, delivery...)
     if (!value?.messages?.length) {
       return NextResponse.json(
-        { received: true, type: "non-message-event" },
+        { received: true, type: "non-message" },
         { status: 200 },
       );
     }
 
-    const incomingMessage = value.messages[0];
-    const from = incomingMessage?.from;
-    const incomingMessageId = incomingMessage?.id;
+    const incoming = value.messages[0];
+    const from = incoming?.from || "unknown";
+    const msgType = incoming?.type || "unknown";
+    const messageId = incoming?.id || "no-id";
+    const timestamp = incoming?.timestamp || "";
+    const profileName = value?.contacts?.[0]?.profile?.name || "Unknown";
 
-    if (!from) {
-      return NextResponse.json(
-        { received: true, type: "missing-from" },
-        { status: 200 },
-      );
-    }
+    const messageText = extractMessageText(incoming);
 
-    // Protect against duplicate webhook delivery (Meta retries)
-    if (isDuplicateMessage(incomingMessageId)) {
-      console.log("Duplicate message ignored:", incomingMessageId);
-      return NextResponse.json(
-        { received: true, duplicate: true },
-        { status: 200 },
-      );
-    }
+    const subject = `WhatsApp Alert | ${profileName} | ${from}`;
 
-    // 1) Text message
-    if (incomingMessage.type === "text") {
-      const textBody = incomingMessage?.text?.body || "";
-      await handleTextMessage(from, textBody);
+    const emailText = `📩 New incoming WhatsApp message
 
-      return NextResponse.json(
-        { received: true, replied: true, type: "text" },
-        { status: 200 },
-      );
-    }
+From: ${profileName}
+WA ID: ${from}
+Type: ${msgType}
+Message ID: ${messageId}
+Timestamp: ${timestamp}
 
-    // 2) Interactive button reply
-    if (incomingMessage.type === "interactive") {
-      const buttonReply = incomingMessage?.interactive?.button_reply;
-      const listReply = incomingMessage?.interactive?.list_reply;
+Message:
+${messageText}
 
-      if (buttonReply?.id) {
-        await handleInteractiveButton(from, buttonReply.id);
+-----------------------
+Raw (short):
+${JSON.stringify(incoming, null, 2)}
+`;
 
-        return NextResponse.json(
-          { received: true, replied: true, type: "interactive-button" },
-          { status: 200 },
-        );
-      }
+    const emailHtml = `
+      <div style="font-family:Arial,sans-serif;line-height:1.6">
+        <h2>📩 New incoming WhatsApp message</h2>
+        <p><b>From:</b> ${escapeHtml(profileName)}</p>
+        <p><b>WA ID:</b> ${escapeHtml(from)}</p>
+        <p><b>Type:</b> ${escapeHtml(msgType)}</p>
+        <p><b>Message ID:</b> ${escapeHtml(messageId)}</p>
+        <p><b>Timestamp:</b> ${escapeHtml(timestamp)}</p>
+        <hr />
+        <p><b>Message:</b></p>
+        <pre style="white-space:pre-wrap;background:#f6f6f6;padding:12px;border-radius:8px">${escapeHtml(messageText)}</pre>
+      </div>
+    `;
 
-      // Optional future support for list_reply
-      if (listReply?.id) {
-        await handleInteractiveButton(from, listReply.id);
+    await sendEmailAlert({
+      subject,
+      text: emailText,
+      html: emailHtml,
+    });
 
-        return NextResponse.json(
-          { received: true, replied: true, type: "interactive-list" },
-          { status: 200 },
-        );
-      }
-
-      await sendText(
-        from,
-        'Unsupported interactive reply received for now. Send "menu" to start.',
-      );
-
-      return NextResponse.json(
-        { received: true, replied: true, type: "interactive-unsupported" },
-        { status: 200 },
-      );
-    }
-
-    // 3) Unsupported types fallback
-    const session = getSession(from);
-    await sendText(
-      from,
-      'Currently, the bot supports text and buttons only ✅\nSend "menu" to continue.',
-    );
-
-    // Optional: only auto-show menu if user is at main menu
-    if (session.state === "MAIN_MENU") {
-      await sendMainMenu(from, session);
-    }
+    // اختياري: ترد على العميل
+    // لو مش عايز أي رد، سيبها مقفولة
+    // await sendText(from, "تم استلام رسالتك ✅");
 
     return NextResponse.json(
-      { received: true, replied: true, type: "unsupported" },
+      { received: true, emailed: true },
       { status: 200 },
     );
   } catch (error) {
     console.error("Webhook POST error:", error);
-    return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+    return NextResponse.json(
+      { error: String(error?.message || error) },
+      { status: 400 },
+    );
   }
 }
