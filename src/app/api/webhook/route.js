@@ -1,4 +1,4 @@
-export const runtime = "nodejs"; // safer for webhook logic on Vercel
+import { NextResponse } from "next/server";
 
 // GET: Meta webhook verification
 export async function GET(req) {
